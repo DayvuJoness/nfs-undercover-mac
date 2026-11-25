@@ -1,0 +1,8 @@
+# NFS Undercover "composite_blur" (FUN_007936f0): out = lerp(picture, half-size speed-blur image, cvBlurParams.x)
+# over the whole screen. Weighted by distance from the centre instead, where the blur vectors are zero: the centre
+# stays the full-resolution picture, the edges get the blur as before (core.nfsu, 2026-11-17).
+@@FIND
+    oc[0] = ((c[0].xxxx) * (r[0].xyzw) + (r[1].xyzw));
+@@REPLACE
+    { const float2 e_ = t[0].xy * 2.0 - 1.0; const float w_ = c[0].x * saturate(length(e_)); oc[0] = (float4(w_) * (r[0].xyzw) + (r[1].xyzw)); }
+@@END

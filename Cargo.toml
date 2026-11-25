@@ -1,0 +1,29 @@
+[package]
+name = "nfsu-setup"
+version = "1.1.0"
+edition = "2021"
+description = "Builds the native Mac version of Need for Speed: Undercover from your own copy of the PC game"
+build = "build.rs"
+# The port's source and the mods are packed into payload/ by build.rs, not compiled in.
+exclude = ["port-undercover", "payload", "project", "port-source-carbon"]
+
+[build-dependencies]
+sha2 = "0.10"
+
+[[bin]]
+name = "nfsu-setup"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
+rfd = "0.15"
+sha2 = "0.10"
+png = "0.17"
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+winit = "0.30"
+
+[profile.release]
+opt-level = 2
+strip = true

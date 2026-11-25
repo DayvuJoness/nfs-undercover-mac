@@ -1,0 +1,92 @@
+# NFS Undercover's fog and sun-haze pass (code 961f166f1ae442c4, drawn over the whole scene before the speed blur):
+# TEXTURE1 is the sharp scene, which it fogs and hazes; then it blends toward DIFFUSE, a quarter-size blurred copy,
+# by that copy's alpha (a depth-based amount) x c9.w - distant things smeared, the sky bleeding over the edges of trees,
+# lights in a halo. That blend is taken out: the fog and the haze stay as the game sets them, on the sharp picture
+# (core.nfsu, 2026-11-18; a first try that took the blurred copy for the sharp one blurred everything). Code key.
+@@FIND
+    { float4 w_ = saturate((r[0].wwww) * (c[9].wwww)); r[1].x = w_.x; }
+@@REPLACE
+    { r[1].x = 0.0; }
+@@END
+# (Headlights and tunnel lamps as lights were taken out on the person's word, 2026-11-19; the old patch is in
+# docs/nfsu-lights-experiment/.)
+# The void (2026-11-22, the police helicopter): from high up the edge of the world shows the scene's clear colour -
+# black - below the sky: far pixels (r[1].y = 1: no fog) with nothing drawn. The person: not a grey fill, the real
+# sky copied. A void pixel looks up its column for the first pixel that is not void. Only if that is SKY (the depth
+# TEXTURE2 decoded as the shader does, dot(sample, c7), at the far plane, and not black) is the sky copied: the edge
+# is found exactly (6 halvings, so the copy has no steps - a first try with 1/64 steps copied in layers and also
+# copied buildings), and the pixel takes the sky mirrored about it (as far above the edge as it is below), so the
+# sky's own gradient continues down; past the top of the screen, or where the mirror point is not sky, the sky at
+# the edge. Anything else above (terrain, buildings) or no edge within half the screen: the fog colour (r[2], the
+# c3/c6 mix the game fogs with). The sky and everything drawn are untouched (not black, or not far).
+# (2026-11-23, the person: "clothes like coloured foil", "see-through holes under the car and in the wheels"): r[1].y
+# is 1 for NEAR pixels too (no fog), so black tyres, a car's underside in shade and black clothes were taken for the
+# void and painted with sky. The void must also be at the far plane in the depth (nothing drawn there).
+@@FIND
+    r[3] = (tx1.sample(sm1, ((t[0].xyzw)).xy));
+@@REPLACE
+    r[3] = (tx1.sample(sm1, ((t[0].xyzw)).xy));
+    const float3 hz_col = r[2].xyz; /* the fog colour, for the helicopter's haze below */
+    const float hz_depth = dot(tx2.sample(sm2, t[0].xy), c[7]);
+    if (r[1].y >= 0.999 && hz_depth >= 0.99999 && max(r[3].x, max(r[3].y, r[3].z)) < 0.004) {
+        const float2 vuv = t[0].xy;
+        float3 sky = r[2].xyz;
+        float lo = vuv.y, hi = -1.0; /* lo: void, hi: first non-void */
+        /* the edge is the first FAR thing above (sky or distant land, depth >= 0.99): anything near - the helicopter
+         * itself, a nearby road - is looked past, so a column under the helicopter decides as its neighbours do (it
+         * found the helicopter's thin parts in some rows and the sky in others: a ladder under it) */
+        for (int vi = 1; vi <= 32; ++vi) {
+            const float y = vuv.y - float(vi) / 64.0;
+            if (y < 0.0) break;
+            const float2 q = float2(vuv.x, y);
+            const float3 e = tx1.sample(sm1, q).xyz;
+            if (max(e.x, max(e.y, e.z)) >= 0.004 && dot(tx2.sample(sm2, q), c[7]) >= 0.99) { hi = y; break; }
+            lo = y;
+        }
+        if (hi >= 0.0) {
+            for (int k = 0; k < 6; ++k) { /* the edge between lo (void or near) and hi (far) */
+                const float m = 0.5 * (lo + hi);
+                const float2 q = float2(vuv.x, m);
+                const float3 e = tx1.sample(sm1, q).xyz;
+                if (max(e.x, max(e.y, e.z)) >= 0.004 && dot(tx2.sample(sm2, q), c[7]) >= 0.99) hi = m; else lo = m;
+            }
+            /* sky = at the far plane itself (0.99999: far terrain a few km off decodes to about 0.9998 - taking that
+             * for sky copied it in stripes); the copy is averaged over 5 points across 1.5% of the screen so
+             * neighbouring columns don't differ */
+            const float2 eu = float2(vuv.x, hi + 0.002);
+            const float ed = dot(tx2.sample(sm2, float2(vuv.x, hi - 0.002)), c[7]);
+            if (ed >= 0.99999) {
+                const float my = max(hi - (vuv.y - hi) - 0.004, 0.0);
+                float3 acc = float3(0.0);
+                float wsum = 0.0;
+                for (int sx = -2; sx <= 2; ++sx) {
+                    const float2 mu = float2(vuv.x + float(sx) * 0.004, my);
+                    const float3 mc = tx1.sample(sm1, mu).xyz;
+                    if (dot(tx2.sample(sm2, mu), c[7]) >= 0.99999 && max(mc.x, max(mc.y, mc.z)) >= 0.004) {
+                        acc += mc;
+                        wsum += 1.0;
+                    }
+                }
+                sky = wsum > 0.0 ? acc / wsum : tx1.sample(sm1, float2(vuv.x, hi - 0.002)).xyz;
+            }
+            (void)eu;
+        }
+        r[3].xyz = sky;
+    }
+@@END
+# Distance haze for the helicopter (2026-11-22; the person: holes, road strips and textures loading in the distance
+# while flying). The world streams around the car as seen from the road; from high up far more is in view than is
+# loaded. core.nfsu sets c20 (kit recomp_d3d9_ps_reg_set) while flying: x the haze amount (grows with height),
+# y/z the view distance where it starts/is full. Geometry (not sky, not the filled void) fades toward the game's own
+# fog colour by distance - c8.w / (depth + c8.x) is the view distance the shader itself fogs with (c5.z/c5.w its
+# start/end). c20 is zero when not flying: nothing changes.
+@@FIND
+    float4 col = oc[0];
+@@REPLACE
+    if (c[20].x > 0.0 && hz_depth < 0.9999) {
+        const float hz_dist = c[8].w / (hz_depth + c[8].x);
+        const float hz = c[20].x * smoothstep(c[20].y, c[20].z, abs(hz_dist));
+        oc[0].xyz = mix(oc[0].xyz, hz_col, hz);
+    }
+    float4 col = oc[0];
+@@END

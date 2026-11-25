@@ -1,0 +1,297 @@
+# game.toml - everything the kit needs to know about Need for Speed: Undercover
+# (PC, nfs.exe FileVersion 1.0.0.1, PE timestamp 2008-12-04, 10.5 MB, no SecuROM wrapper:
+# sections .text .rdata .data .tls .rsrc .reloc only, entry point 0x008aec55 in .text)
+# that is not derivable from the binary.
+#
+# The port started on an unwrapped 1.1.2.1 exe (2009-05-04, SHA-256 3f33193f...b6d355d); that build crashed when
+# a save loaded, on Windows too (the person's laptop, 2026-11-14), so the person switched to this 1.0.0.1 install,
+# which runs on Windows. The 1.1.2.1 configuration is kept in docs/nfsu-1.1.2.1/. Every exe address below was
+# moved from it by matching function bytes with addresses and branch offsets masked (unique match each); the
+# old address is given in brackets where it differs.
+#
+# Values marked "sentinel" are not identified yet: they point into the linker's
+# "PADDINGXX" filler after the resource data (0x01375220-0x01375fff; resources
+# end at 0x01375220, nothing references the filler), so the kit's hooks compile
+# and never fire. Sentinels and slots use 0x01375400-0x01375fff. Replace each
+# one with a real address as bring-up finds it.
+#
+# Not to be confused with the 46.6 MB retail 1.0.0.1 nfs.exe (SHA-256 6caed72e...af95b4): that one is
+# SecuROM 7 wrapped (.securom section, entry 0x03070b08) and can't be translated.
+
+[game]
+id = "nfsu"
+name = "Need for Speed: Undercover"
+app_name = "UndercoverRecomp"
+bundle_id = "io.github.nfsu-native-mac"
+executable = "nfs.exe"
+sha256 = "d1ecded04cbba387c99299d2159b29b5c04b1d095293013caa4b404a43c7d2e9"
+image_base = 0x00400000
+entry_point = 0x008aec55
+# The game's own registry key is HKLM\Software\EA Games\Need for Speed Undercover (string in nfs.exe).
+guest_root = 'C:\Program Files\EA Games\Need for Speed Undercover'
+developer_exe = "original/nfs.exe"
+windows_version = "5.1.2600"
+# The image ends at 0x01408000 (.reloc), above the kit's default heap start 0x01000000; the heap keeps the
+# 1.1.2.1 start (its image ended at 0x01939000), which is still free.
+heap_base = 0x01940000
+# Nearly 2 GB arena, as Carbon: the two runtime DLLs sit just above the fixed stack/TEB/shim region
+# (0x10000000), the extra heap above them. Only memory the game touches is used.
+guest_size = 0x7ffff000
+heap_extra_base = 0x101e0000
+heap_extra_size = 0x6fe1f000
+
+[translate]
+listings = "analysis/decompiled/nfs.exe"
+# Direct3D 9 only, no DirectDraw locks: guest stores skip the watch/dirty hooks, which let the compiler keep guest
+# registers in host registers (about 30% fewer loads and stores in the hot functions, 2026-11-15).
+store_hooks = false
+# Flags are computed only where a path to a reader exists, over the whole function: MSVC code never carries a flag
+# into or out of a call (translate.py --check-flags: no reader after a call once COMISS/FCOMI were known to write
+# flags; 2026-11-16). Before, every flag was live at every branch, CALL and RET.
+flags_across_blocks = true
+# Native replacements of the hottest small functions (native/nfsu_native.c; NFSU_NATIVE_CHECK=1 compares).
+native = { header = "native/nfsu_native.h", sources = ["native/nfsu_native.c"] }
+# The render thread runs on its own core (core.nfsu render_free -> RECOMP_FREE_THREADS "RenderThread"). The main
+# thread hands it work through two command rings (0x01278248, 0x01270c20: FUN_006a2c80 copies a command in and then
+# counts it, FUN_006a2cd0 reads the count, runs the command and counts it run, FUN_006a2c50 resets an empty ring)
+# and waits for its replies on the flag [0x00ea0164]. All with plain loads and stores, ordered on x86 and not on
+# ARM, so each hand-over point gets a host barrier (2026-11-15):
+memory_fences = [
+    0x006a2cc5, # push: the command's bytes and the write position before `add [ring], 1`
+    0x006a2cf7, # run: the count read before the command is read
+    0x006a2d07, # run: the command read before `add [ring+4], 1` lets the producer reuse its bytes
+    0x006a2c50, # reset: the producer's empty check before it rewrites the ring
+    0x00792228, 0x0079222e, 0x007922ad, # the producer's empty checks of 0x01278248 (count, run)
+    0x00769396, 0x007693b7, 0x00769484, 0x007694a6, # reply-flag waits: the flag read before what the reply carries
+    0x007921e3, 0x00792208, 0x00792261, 0x00792288, 0x007af1f6, 0x00792185, 0x007921da,
+]
+globals = "globals.toml"
+animation_counter = 0x01375f00  # sentinel
+volatile_reads = []
+# Functions Ghidra misses (reached only through pointers) are added here as runs report them. Each was proved on
+# 1.1.2.1 (evidence in docs/nfsu-1.1.2.1/game.toml) and moved by a unique masked byte match; [old address].
+# 1.1.2.1's 004890e0 and 00a3d0c0 have no unique match here and are left out until a run asks for them.
+# State-handler methods with switch tables (`MOV EAX,[ESP+4]; PUSH ESI; ADD EAX,3; CMP EAX,n; JMP [..]`),
+# made in Ghidra before its analysis by tools/analyze.py's pre-script:
+entry_points = [0x00475c40, 0x00475d90, 0x00487640, 0x004877e0, 0x0048dd50, 0x0048def0,  # [0046f1a0 0046f300
+                0x00492b70, 0x00492ee0, 0x00493170, 0x00493630, 0x00494e00, 0x00496ca0,  #  0047fdf0 0047ff90
+                0x004adcb0, 0x004ae4b0, 0x004aefc0, 0x004af4f0, 0x004afd50, 0x004b0140,  #  00486120 004862c0 ...]
+                0x007dd5e0,                                                              # [007afe20]
+                # First 1.0.0.1 translation (2026-11-14): switch functions whose tables failed ("jump table at X:
+                # entry N -> Y is not an instruction boundary"; Ghidra had cut 004341f0's cases into 91 fragment
+                # functions jumping to 00434b9a). Pre-created so Ghidra resolves their tables, as on 1.1.2.1;
+                # 00490e00 sits where 1.1.2.1's 004890e0 maps to (same +0x7d.. shift as its neighbours).
+                0x004341f0, 0x00490e00, 0x00493320, 0x004947f0, 0x00494af0, 0x006281e0, 0x00701c20,
+                0x00718f60, 0x007d46c0, 0x007d99a0,
+                # First 1.0.0.1 run: "call to unknown target ... returning 0", then ExitProcess(0xC0000409). Each
+                # starts after int3 padding: 0049a9f0 (pointer pushed at 004a6d3b, called from 009591fb on a worker),
+                # 0082f610 (vtable slot 0x00c2f6c0, called from 0082f330), 005f75b0 (vtable slot 0x00bfb618, called
+                # from 006a7ad3).
+                0x0049a9f0, 0x0082f610, 0x005f75b0,
+                # Every method of an RTTI vtable (3192 vtables scanned: the dword before each names a
+                # CompleteObjectLocator of a .?AV/.?AU class) that starts after int3/RET padding and was absent
+                # from the translation's dispatch table (2026-11-15; found when slot 0x00be28cc = 004a3770 was
+                # called from 0046acb8: "call to unknown target 004a3770", then a SIGSEGV).
+                0x00406b40, 0x00407600, 0x0040a780, 0x0040d020, 0x00415790, 0x004224f0, 0x00422600, 0x004283e0,
+                0x004290d0, 0x0042e340, 0x00432470, 0x00433d00, 0x00445a40, 0x004a3770, 0x004c6ed0, 0x004c71f0,
+                0x004edbd0, 0x005261b0, 0x005b11f0, 0x005b1f00, 0x005bbda0, 0x005bfb70, 0x005d555b, 0x005fc720,
+                0x005fc7b0, 0x005fcaa0, 0x005fcb30, 0x005feff0, 0x00607350, 0x006073e0, 0x00607490, 0x00610ed0,
+                0x00619740, 0x0063d750, 0x006b6980, 0x006bfdc0, 0x006eaf60, 0x006fd5f0, 0x006fe300, 0x006ffa50,
+                0x00700810, 0x007068f0, 0x007075d0, 0x007089f0, 0x00709290, 0x007191c0, 0x0071a150, 0x0071a230,
+                0x00726890, 0x0072b130, 0x00762ec0, 0x007cb950, 0x007cc050, 0x007d64b0, 0x007d94c0, 0x007daf60,
+                0x007e2360, 0x0085af80,
+                # Tail-jump targets of the new method 007e2360 (a switch of JMPs), each after int3 padding:
+                0x007df4b0, 0x007df9a0, 0x007dfc70, 0x007d4b20, 0x007cbdb0,
+                # Data-pointer scan (2026-11-15): code pointers in .rdata/.data to function starts after RET n or
+                # padding that the translation still lacked; 0043c310 was called from 0040a938 ("call to unknown
+                # target", vtable slot 0x00bdd97c) after the title screen. 00425c20, 004337a0 vtable slots;
+                # 008b41c2 (two .rdata slots), 008cc570 (.data).
+                0x00425c20, 0x004337a0, 0x0043c310, 0x008b41c2, 0x008cc570,
+                # Instruction-immediate scan (PUSH/MOV of a code address after padding or RET; 2026-11-15): 007ce580
+                # was called from 00602910 in the first in-game minutes ("call to unknown target 007ce580", then the
+                # CRT's R6025 pure virtual call, exit 3). Left out: 0092bbb8 (decodes as data), 00a42fac (EBP base).
+                0x004a4f70, 0x005a60a0, 0x007ce580, 0x007dfe70, 0x008aef84, 0x008b2915, 0x00906e80,
+                # DrivingCameraMover (vtable 0x00be4944): the methods the translator had recovered with its own
+                # decoder instead of Ghidra's listing (2026-11-15, free-roam camera stuck looking down at the car).
+                0x004cf050, 0x004c5970, 0x004d5260, 0x004c5990, 0x004c59c0, 0x004d5270, 0x004d52f0,
+                0x004d5310, 0x004d5280, 0x004d52a0, 0x004d52c0, 0x004d52e0, 0x004db140,
+                # The memory tracker's set-up (without it every memory category was "not recognised") [00a06100]:
+                0x00a38e60,
+                # Code pointers stored with `MOV dword ptr [mem],imm` (a CPU-dispatched copy family) and three
+                # routines after int3 [00880419..00880ac2, 00a00400, 00a2fe00]:
+                0x008b35f4, 0x008b37a9, 0x008b3893, 0x008b3947, 0x008b3add, 0x008b3b91, 0x008b3c9d,
+                0x00a33160, 0x00a6be40,
+                # The "gameframe" window procedure [0072b340]:
+                0x00753100,
+                # A worker routine called through EDX [009eb5e0]:
+                0x00a1e320,
+                # The thiscall method reached through a vtable when Enter is pressed on the title screen [0088665a]:
+                0x008b9835,
+                # The 19 methods of the vtable that the first scene load calls [009ec260..009ee120]:
+                0x00a1efd0, 0x00a1f010, 0x00a1f050, 0x00a1f0e0, 0x00a1f100, 0x00a1f110, 0x00a1f850,
+                0x00a1f880, 0x00a1f8b0, 0x00a20700, 0x00a20720, 0x00a20840, 0x00a20b70, 0x00a20b80,
+                0x00a20b90, 0x00a20ba0, 0x00a20bb0, 0x00a20bc0, 0x00a20ea0]
+# Draw distance (2026-11-19, the person: "shadows, textures and small objects drawn much farther"; the sites the
+# GenericFix mod patches, found by its byte patterns in this exe):
+# - shadows: FUN_00780dc0 computes the three cascade distances (near/mid/far, 5/30/170 m) into 0x00d53f38..40 every
+#   call and reads them after; the three stores are moved to mod slots 0x01375800..08, so core.nfsu writes the array
+#   itself - the game's own values (copied from the slots) or farther ones (setting draw_distance), live;
+# - scenery: FUN_0082b070 gives every view the layer mask 0x0e (0x0c at the lowest world detail) at 0082b0a6/0082b0ad
+#   and copies it per view at 0082b0e6; that read now comes from mod slot 0x0137580c (seeded 0x0e), so core.nfsu can
+#   add layer bit 0 (GenericFix's ImproveSceneryLOD: 0x0f), live.
+operand_redirects = [
+    { at = 0x00780deb, from = 0x00d53f38, to = 0x01375800 },
+    { at = 0x00780e29, from = 0x00d53f3c, to = 0x01375804 },
+    { at = 0x00780e31, from = 0x00d53f40, to = 0x01375808 },
+    # ExtraOptions' DisableDoubleTapBrakeToReverse (2026-11-19, found by tracing its patches): the brake
+    # double-tap window the game compares against (0.5 s at 0x00bd90f8) is read from a slot core.nfsu sets
+    { at = 0x00428dc5, from = 0x00bd90f8, to = 0x01375810 },
+]
+# The Police Career plugin's mid-function hook (2026-11-19): it overwrites `CMP EAX,0x1458a450` after a virtual
+# call in FUN_007dcxxx with a CALL to its own routine (which hands ZF back); see the translator's code_patch_sites.
+# and its JMP rewrites (adjustor thunks `sub ecx,0x20; jmp ...` and a tail jump), found by tools/police_career.py:
+# and two MOV EDI,<function> immediates it repoints (the career event integration):
+code_patch_sites = [0x007dcd74, 0x007c2c53, 0x007c2c93, 0x00663574, 0x00663604, 0x0042fa31]
+instruction_patches = [
+    { at = 0x0082b0e6, text = "MOV DL,byte ptr [0x0137580c]" },
+]
+# The filler holds "PADDINGXX" text: the kit's sentinel globals read zero, as on Carbon.
+data_seeds = [
+    { addr = 0x01375f60, value = 0 },
+    { addr = 0x01375f64, value = 0 },
+    { addr = 0x01375f70, value = 0 },
+    # the scenery layer mask core.nfsu hands FUN_0082b070 (see instruction_patches)
+    { addr = 0x0137580c, value = 0x0e },
+    # the brake double-tap window (float 0.5, the game's own value; see operand_redirects)
+    { addr = 0x01375810, value = 0x3f000000 },
+    # Police Career's SecuROM jump-slot hooks (tools/police_career.py SLOT_OVERRIDES, kit RECOMP_SLOT_HOOKS):
+    # A: cell pointer -> cell -> FUN_00571b80 (its routine continues there; the kit drops the `push ebx` it ran)
+    { addr = 0x01375840, value = 0x01375844 },
+    { addr = 0x01375844, value = 0x00571b80 },
+    # B: cell (holding FUN_0051df10 itself) and a fixed pointer to it
+    { addr = 0x01375850, value = 0x0051df10 },
+    { addr = 0x01375854, value = 0x01375850 },
+]
+
+# nfs.exe imports the Visual C++ 2005 runtime (msvcr80.dll / msvcp80.dll 8.0.50727.762, the copies the game
+# installs beside nfs.exe with microsoft.vc80.crt.manifest). Both are translated like the game, from copies
+# tools/rebase_pe.py relocates to the bases below (the originals want 0x78130000 / 0x7c420000, where the
+# kit's extra heap lives). Keys sort into load order: msvcp80 imports msvcr80, so msvcr80 comes first.
+# tools/rebase_pe.py fills in sha256 and size.
+[modules.aux.a_msvcr80]
+name = "msvcr80.dll"
+path = "rebased/msvcr80.dll"
+sha256 = "69f0db51bfe5831543ef7c26250ccb198572e88aadedbd8c1c331cb7ce6b35c4"
+base = 0x10000000
+size = 0x9b000
+listings = "analysis/decompiled/msvcr80.dll"
+# 1000aa56: right after __create_locale's 5-byte JMP (1000aa51), an SEH-prolog function msvcp80 calls
+# (return 100cc53c; "call to unknown target 1000aa56", first runs 2026-11-13).
+# 100029e1: _threadstartex, after int3 padding; CreateThread's start routine for every _beginthreadex thread
+# ("call to unknown target 100029e1 ... guest thread 2", run 6, 2026-11-13). Exports are entries anyway
+# (translate.py pe_code_exports).
+# The x87 transcendental dispatcher __trandisp2 (1005bd97) ends in `JMP [EBX]` (1005be21) through per-function
+# tables at 0x100929c4.. and 0x100931b0..; their targets are small tail routines after a RET that analysis never
+# reached: 1005be34, 1005be6d (FXCH, falling into 1005be6f), 1005be6f, 1005be97, 1005bed6, 1005c97c, 1005c9d5,
+# 1005c9f8. "recomp: no block entry for indirect jump to 0x1005c9d5 from 0x1005be21" aborted the first scene load
+# (run 2026-11-14, thread 10).
+entry_points = [0x1000aa56, 0x100029e1,
+                0x1005be34, 0x1005be6d, 0x1005be6f, 0x1005be97, 0x1005bed6, 0x1005c97c, 0x1005c9d5, 0x1005c9f8]
+function_alignment = 4
+
+[modules.aux.b_msvcp80]
+name = "msvcp80.dll"
+path = "rebased/msvcp80.dll"
+sha256 = "c689c4cde4a4736c2f3dbda15edc11d57633576f62256955afe05918009baf6d"
+base = 0x100a0000
+size = 0x87000
+listings = "analysis/decompiled/msvcp80.dll"
+entry_points = []
+function_alignment = 4
+
+# The Police Career mod (2026-11-19): the person's PoliceCareer.asi, adapted to this exe and relocated here by
+# tools/police_career.py from their mods folder (rebased/ is not part of the repository). Loaded only when
+# core.nfsu's mod_police_career setting is on, early in start-up, the way an ASI loader would.
+[modules.aux.c_policecareer]
+name = "PoliceCareer.asi"
+path = "rebased/PoliceCareer.asi"
+sha256 = "5b27595328e639ce83a6e3c1003f17012e83bfa597ef4ff3865543a74cb84e99"
+base = 0x10130000
+size = 0xaf000
+listings = "analysis/decompiled/PoliceCareer.asi"
+# call targets Ghidra did not make functions (translator: 'dispatches to ..., which is not an entry point')
+eager_flags = true
+entry_points = [0x10138570, 0x1013b560, 0x1013c890, 0x1013fd40, 0x10142010, 0x101505f0, 0x101517e0, 0x10174550]
+function_alignment = 4
+
+[hooks]
+# All sentinels until bring-up identifies them (see the MW port's game.toml
+# for what each one means).
+frame_clock_begin = 0x01375f10
+frame_clock_wait = 0x01375f14
+frame_clock_wait_clamp = 0x01375f18
+frame_clock_clamp_deadline = 0x01375f20
+frame_clock_wait_deadline = 0x01375f24
+cursor_surface_ptrs = [0x01375f30, 0x01375f34]
+mouse_vtable = 0x01375f40
+mouse_device_ptr = 0x01375f44
+mouse_device_right = 0x01375f48
+camera = 0x01375f50
+sprites = []
+
+[mods]
+builtin = "none"
+
+[controls]
+pad = "native"
+
+[controls.native]
+# The pad reaches the game through XInput (nfs.exe imports XINPUT1_3 and plays with an Xbox 360 pad natively), not
+# as a DirectInput joystick: with this layout a DirectInput pad carried the triggers on Rx/Ry, which an Xbox pad over
+# DirectInput uses for the right stick - a fresh profile's default bindings read the released triggers as the camera
+# stick held at one end, and the throttle flipped it to the other (camera swinging between sky and car roof,
+# 2026-11-15). XInput triggers rest at 0 and its right stick is a stick.
+xinput = true
+# 2026-11-22: DirectInput must list the pad too - the game finds pads only by enumerating DirectInput devices and then
+# drives the one whose device path has "IG_" (an Xbox pad) through XInput (nfs.exe FUN_0075c680 / FUN_0075e8f0 /
+# FUN_0075d8b0). With dinput = false the game never found a pad at all (the person's Xbox pad did nothing in game).
+# launch.c sets RECOMP_DINPUT_XINPUT_PATH so the DirectInput pad reports an Xbox 360 device path ("...&IG_00#...").
+dinput = true
+axes = ["x", "y", "z", "rz", "rx", "ry"]
+buttons = ["square", "cross", "circle", "triangle", "l1", "r1", "l2", "r2", "select", "start", "l3", "r3", "ps"]
+
+[launcher]
+title = "Need for Speed: Undercover"
+install_names = ["Need for Speed - Undercover", "Need for Speed Undercover", "NFS Undercover", "Undercover"]
+min_free_mb = 300
+
+[setup]
+# Folders of the installed game (checked by the Setup app and setup.sh).
+required_dirs = ["CARS", "FRONTEND", "GLOBAL", "LANGUAGES", "SOUND", "TRACKS"]
+# Files the game opens at start-up with no fallback (run 17, 2026-11-13: the HD or SD APT font is chosen by the
+# pointer at 0x00cbfacc and opened by 005dcfa0 -> 00692e20; with neither present the main thread went on with bad
+# data and faulted in memset near the top of the arena). Only files a run has proved necessary are listed.
+# (TRACKS\L8R_MW2\MakeSceneryExtra.bin is NOT part of the retail install - the person's original TRACKS has the
+# same 3 files - so it is not listed; the game must cope without it.)
+required_files = ["GLOBAL/GLOBAL_APT_FONT_HD.BUN", "GLOBAL/GLOBAL_APT_FONT_SD.BUN"]
+
+[bundle]
+# The stock runtime DLLs stay out; the rebased copies are bundled instead. PB = PunkBuster (online only),
+# "`" = where this install keeps a save, Support = EA's support tools, *_old = a player's own set-aside copies
+# (GLOBAL_old: the incomplete 2-file GLOBAL the player kept when restoring the full one, 2026-11-14).
+# The 1.0.0.1 install (2026-11-14) also carries files the game never opens: DirectX redistributables, the
+# PunkBuster installer, an uninstaller, a release note (*.nfo), an icon and a Steam-API stand-in's settings.
+# Setup app (2026-11-25): a copy taken out of a Wine wrapper (Kegworks/Whisky style, drive_c/Program Files (x86)) also
+# holds the wrapper's and Steam's own files, which the game never opens: Steam's install script (*.vdf), a registry
+# export (*.reg), DXVK's settings and shader cache, a launch script and Steam's testapp.exe.
+exclude = ["Uninstall", "Support", "scripts", "SAVE", "PB", "`", "*_old", "*.dll", "*.asi", "*.txt", "*.manifest",
+           "DirectX", "pbsetup", "unins000.*", "*.nfo", "*.ico", "steam_api*.ini",
+           "*.vdf", "*.reg", "dxvk.conf", "*.dxvk-cache", "*.bat", "testapp.exe"]
+
+[settings]
+rows = ["window", "frame_limit", "performance_overlay", "filtering"]
+page = "tabs"
+# The core mod whose settings the kit reads for its own features (pause_in_menu, upscaling).
+core_mod = "core.nfsu"
+# A 3D game: fill the screen at any resolution.
+scaling = "smooth"

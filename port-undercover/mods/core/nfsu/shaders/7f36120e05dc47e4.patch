@@ -1,0 +1,52 @@
+# NFS Undercover's final composite while a screen effect fades in (code 7f36120e05dc47e4: as 823d0a95d7df282e, the
+# scene first mixed toward cvVisualEffectFadeColour by its .w - the flashes and fades, the pursuit detection's among
+# them). With HDR the scene mark is lowered by the fade's amount and by the overlays, so the effect is shown as the
+# game draws it, not lifted (core.nfsu, 2026-11-18). Named by code key: every variant.
+@@FIND
+    col = float4(saturate(col.rgb), 2.0);
+@@REPLACE
+    col = float4(saturate(col.rgb), 2.0 - saturate(saturate(c[1].w) + 2.0 * max((c[3].z) * (r[1].x) + (c[3].w) * (r[1].z), 0.0)));
+@@END
+# The veil over menus (2026-11-18): the bloom image is raised to the power cvVisualTreatmentParams3.x before it is
+# screen-blended over the picture - about 4.3 while driving, but 1.4 behind the pause menu and the level-up screen, which
+# spreads the glow over everything as a milky veil. The power is kept at 3 or more.
+@@FIND
+    { float4 w_ = ((r[1].xyzw) * (c[4].xxxx)); r[0].xyz = w_.xyz; }
+@@REPLACE
+    { float4 w_ = ((r[1].xyzw) * float4(max(c[4].x, 3.0))); r[0].xyz = w_.xyz; }
+@@END
+# ... and in that state (the game's power below 3: menus, the level-up screen) the glow itself is cut to 30%: the
+# milky veil over the paused world is gone, the menus keep a faint glow.
+@@FIND
+    { float4 w_ = ((r[1].xyzw) * (c[2].xxxx)); r[0].xyz = w_.xyz; }
+@@REPLACE
+    { float4 w_ = ((r[1].xyzw) * float4(c[2].x * (c[4].x < 3.0 ? 0.3 : 1.0))); r[0].xyz = w_.xyz; }
+@@END
+# The Photorealistic look (core.nfsu mod_photoreal, live: the kit puts the setting in c30.x, RECOMP_D3D9_PS_SETTING_REG;
+# 2026-11-19), in place of that mod's ReShade preset, on the scene only - the HUD, menus and text are drawn after this
+# and keep their colours. Its parts as the preset sets them: lift/gamma/gain (red lift 0.955, green gamma 0.958, blue
+# gain 1.082), a tone curve (midtones +0.12, highlights +0.12, whites +0.10), colours about 14% fuller, and a warm
+# (about 2900 K) low-saturation bloom from the game's own bloom image above 0.3, screen-blended at 0.32.
+@@FIND
+    { float4 w_ = (mix((r[0].xyzw), (c[0].xyzw), (r[0].wwww))); r[2].xyz = w_.xyz; }
+@@REPLACE
+    { float4 w_ = (mix((r[0].xyzw), (c[0].xyzw), (r[0].wwww))); r[2].xyz = w_.xyz; }
+    if (c[30].x > 0.5) {
+        const float3 lift_ = float3(0.955, 1.0, 1.0), gamma_ = float3(1.0, 0.958, 1.0), gain_ = float3(1.0, 1.0, 1.082);
+        float3 g_ = saturate(r[2].xyz * (1.5 - 0.5 * lift_) + 0.5 * lift_ - 0.5);
+        g_ = pow(saturate(g_ * gain_), 1.0 / gamma_);
+        const float y_ = dot(g_, float3(0.2126, 0.7152, 0.0722));
+        const float mid_ = 4.0 * y_ * (1.0 - y_);
+        const float hi_ = smoothstep(0.45, 0.85, y_) * (1.0 - y_) * 2.0;
+        const float wh_ = smoothstep(0.75, 1.0, y_) * (1.0 - y_) * 4.0;
+        const float y2_ = saturate(y_ + 0.25 * (0.122 * mid_ + 0.121 * hi_ + 0.099 * wh_));
+        g_ = g_ * (y_ > 1e-4 ? y2_ / y_ : 1.0);
+        const float l2_ = dot(g_, float3(0.2126, 0.7152, 0.0722));
+        g_ = saturate(l2_ + (g_ - l2_) * 1.14);
+        float3 b_ = max(tx2.sample(sm2, t[0].xy).rgb - 0.297, 0.0) / 0.703;
+        const float bl_ = dot(b_, float3(0.2126, 0.7152, 0.0722));
+        b_ = mix(float3(bl_), b_, 0.177) * float3(1.0, 0.72, 0.45) * (0.324 * 0.72 * 2.0);
+        g_ = 1.0 - (1.0 - g_) * (1.0 - saturate(b_));
+        r[2].xyz = g_;
+    }
+@@END

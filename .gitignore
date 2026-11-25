@@ -1,0 +1,12 @@
+/target/
+/dist/
+/shots/
+/payload/mods_to_add/
+/payload/source.tar.gz
+/payload/source.tar.gz.new
+/port-source-carbon/
+/project/
+/project_err/
+/NEXT-PROJECT-PROMPT.md
+.DS_Store
+__pycache__/

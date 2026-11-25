@@ -1,0 +1,283 @@
+/* nfsu.c - Need for Speed: Undercover's core mod (core.nfsu).
+ *
+ * It gives the kit's own features a core mod to read their settings from (game.toml [settings] core_mod:
+ * pause_in_menu, upscaling) and the launcher its options (render_scale, mixer_own_core), and it carries the
+ * game hooks bring-up needs, each with the listing it came from (see CLAUDE.md).
+ *
+ * RENDER-THREAD WAIT (2026-11-14). FUN_0071cff0 queues a request for the render thread (FUN_0076c2f0) and spins
+ * `while (!reply) FUN_007666f0();`. Once the flag [0x013b31e4] is set, 007666f0 returns at once without calling
+ * anything, so on Windows the loop is a busy wait the preemptive render thread ends. The kit runs one guest thread
+ * at a time and hands over only at a blocking import, so the main thread spun forever (RECOMP_PROFILE: 0071cff0 54%,
+ * 007666f0 46% of every 10 s window, no frame presented) and the render thread never answered. A BEFORE hook on
+ * 007666f0 now calls the game's own Sleep(0) (IAT 0x00b610a0) when the flag is set, which yields the baton the way a
+ * Windows thread's time slice would end.
+ */
+#include "pop_mod_api.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+POP_MOD_DECLARE_ABI();
+
+#define RENDER_WAIT_STEP 0x007666f0u  /* void FUN_007666f0(void): the body of 0071cff0's wait loop */
+#define RENDER_WAIT_FLAG 0x013b31e4u  /* set: 007666f0 returns at once (the busy-wait case) */
+#define IAT_SLEEP 0x00b610a0u         /* KERNEL32!Sleep in nfs.exe's import table */
+/* The mirror image on the render thread (2026-11-14, after the first hook): its loop in FUN_007664d0 at 007665e0
+ * keeps calling FUN_00687070 (thiscall, the command ring at 0x1783ca0: +0 commands queued, +4 run, +0xc enabled,
+ * +0x14 write position, +0x18 read position) until the main thread clears [0x1783cac]; with nothing queued the
+ * call does nothing, so it spun (profile: 007664d0 59%, 00687070 41%) while the main thread could not run. */
+#define RENDER_RING_RUN 0x00687070u
+
+static const PopModApi *g_api;
+static uint32_t g_hooks[7];
+static unsigned long g_yields;
+
+static uint32_t get_u32(uint32_t addr) {
+    uint32_t v = 0;
+    g_api->guest_read_u32(g_api, addr, &v);
+    return v;
+}
+
+static void render_wait_yield(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *inv, void *user) {
+    (void)cpu;
+    (void)inv;
+    (void)user;
+    if (!get_u32(RENDER_WAIT_FLAG))
+        return; /* the step that really runs the render pass: nothing to wait for */
+    const uint32_t sleep = get_u32(IAT_SLEEP);
+    if (!sleep)
+        return;
+    const uint32_t args[1] = {0};
+    api->guest_call(api, sleep, 0, args, 1, NULL);
+    if (++g_yields == 1)
+        api->log(api, "core.nfsu: render-thread wait yields the baton (first time)");
+}
+
+// Before FUN_00687070: when its ring holds nothing to run, the caller is waiting for the other thread, so yield.
+static void ring_wait_yield(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *inv, void *user) {
+    (void)inv;
+    (void)user;
+    const uint32_t ring = cpu->ecx;
+    if (!ring)
+        return;
+    const int nothing = get_u32(ring + 0xc) == 0 || get_u32(ring + 0x18) >= get_u32(ring + 0x14) ||
+                        get_u32(ring) == get_u32(ring + 4);
+    if (!nothing)
+        return;
+    const uint32_t sleep = get_u32(IAT_SLEEP);
+    if (!sleep)
+        return;
+    const uint32_t args[1] = {0};
+    api->guest_call(api, sleep, 0, args, 1, NULL);
+    static unsigned long ring_yields;
+    if (++ring_yields == 1)
+        api->log(api, "core.nfsu: render command-ring wait yields the baton (first time)");
+}
+
+/* DIAGNOSTIC, opt-in with NFSU_DIAG_MEMSET=1 (it hooks every memset, so it is off by default). Logs any memset
+ * through the thunk at 0087afb6 (JMP [0x00b61234]) whose end leaves the guest arena, with its caller and the code
+ * words on the stack. Found (2026-11-14): FUN_005dc530 loads TRACKS\<track>\MakeSceneryExtra.bin unconditionally
+ * through FUN_00692e20; when the file is missing FUN_0068fe30 reports size -1, the pool allocator (FUN_00a07450,
+ * call at 00a0756c) fills "-1 bytes" with 0xAA and the process dies, on Windows too. */
+#define MEMSET_THUNK 0x0087afb6u
+static void memset_check(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *inv, void *user) {
+    (void)inv;
+    (void)user;
+    const uint32_t ret = get_u32(cpu->esp), dst = get_u32(cpu->esp + 4), val = get_u32(cpu->esp + 8),
+                   size = get_u32(cpu->esp + 12);
+    if ((uint64_t)dst + size <= 0x7ffff000u && size < 0x20000000u)
+        return;
+    char line[1024];
+    int n = snprintf(line, sizeof line, "core.nfsu: wild memset(dst=%08x, val=%02x, size=%08x) from %08x ebp=%08x"
+                     " esi=%08x edi=%08x ebx=%08x; frames:", dst, val & 0xff, size, ret, cpu->ebp, cpu->esi,
+                     cpu->edi, cpu->ebx);
+    uint32_t bp = cpu->ebp;
+    for (int i = 0; i < 8 && bp && bp < 0x7ffff000u && n < (int)sizeof line - 12; ++i) {
+        n += snprintf(line + n, sizeof line - n, " %08x", get_u32(bp + 4));
+        bp = get_u32(bp);
+    }
+    api->log(api, line);
+    /* The SEH chain at the fault (main thread TEB at 0x0fe00000; FS:[0] = first record {next, handler}): which
+     * frames could catch the access violation Windows would raise once the memset leaves committed memory. */
+    {
+        int m = snprintf(line, sizeof line, "core.nfsu: SEH chain:");
+        uint32_t reg = get_u32(0x0fe00000u);
+        for (int i = 0; i < 24 && reg != 0xffffffffu && reg && m < (int)sizeof line - 24; ++i) {
+            m += snprintf(line + m, sizeof line - m, " %08x->%08x", reg, get_u32(reg + 4));
+            reg = get_u32(reg);
+        }
+        api->log(api, line);
+    }
+    /* In FUN_00a07450 at the fill call EDI = the pool manager and EBP = the pool index: name that pool's allocate
+     * (vtable +0x10), size query (+0xc) and fill (+0x2c) so the static listing can be read. */
+    {
+        const uint32_t pool = get_u32(cpu->edi + 0xc + 4 * cpu->ebp), vt = pool ? get_u32(pool) : 0;
+        snprintf(line, sizeof line, "core.nfsu: pool[%u]=%08x vtable=%08x alloc=%08x size=%08x fill=%08x "
+                 "flags=%08x", cpu->ebp, pool, vt, vt ? get_u32(vt + 0x10) : 0, vt ? get_u32(vt + 0xc) : 0,
+                 vt ? get_u32(vt + 0x2c) : 0, get_u32(cpu->edi + 0x54 + cpu->ebp * 0x28));
+        api->log(api, line);
+    }
+    /* 00a03360 is a stdcall forwarder (RET 0xc), so its caller's return is at ESP+16; dump the stack above it. */
+    /* Words that look like return addresses into nfs.exe's code (00401000..00b60000), deepest last. */
+    n = snprintf(line, sizeof line, "core.nfsu: code words above esp=%08x:", cpu->esp);
+    for (uint32_t i = 4; i < 400 && n < (int)sizeof line - 16; ++i) {
+        const uint32_t w = get_u32(cpu->esp + 4 * i);
+        if (w >= 0x00401000u && w < 0x00b60000u)
+            n += snprintf(line + n, sizeof line - n, " +%x:%08x", 4 * i, w);
+    }
+    api->log(api, line);
+}
+
+/* Same opt-in: FUN_00690cb0(size, debug name, line, flags) is the game's allocation front end (it calls the pool
+ * allocator 00a077e0). Log the exact caller and the name of any request of a negative size. */
+#define ALLOC_FRONT 0x00690cb0u
+static void alloc_check(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *inv, void *user) {
+    (void)inv;
+    (void)user;
+    const uint32_t size = get_u32(cpu->esp + 4);
+    if (size < 0x40000000u)
+        return;
+    char name[64] = {0};
+    const uint32_t np = get_u32(cpu->esp + 8);
+    for (unsigned i = 0; np && i < sizeof name - 1; ++i) {
+        uint32_t w = get_u32((np + i) & ~3u);
+        char ch = (char)(w >> (8 * ((np + i) & 3)));
+        if (!ch)
+            break;
+        name[i] = ch;
+    }
+    char line[512];
+    int n = snprintf(line, sizeof line, "core.nfsu: alloc of %08x (\"%s\", %08x, flags %08x) from %08x; code words:",
+                     size, name, get_u32(cpu->esp + 12), get_u32(cpu->esp + 16), get_u32(cpu->esp));
+    for (uint32_t i = 1; i < 200 && n < (int)sizeof line - 16; ++i) {
+        const uint32_t w = get_u32(cpu->esp + 4 * i);
+        if (w >= 0x00401000u && w < 0x00b60000u)
+            n += snprintf(line + n, sizeof line - n, " +%x:%08x", 4 * i, w);
+    }
+    api->log(api, line);
+}
+
+/* Same opt-in: FUN_00689c30 links a table of packed files (count at +0xc, 5-dword rows from +0x10: name hash, ...,
+ * size at +8) into the list at 0x00cc98c8 that FUN_00689c80 searches before a file is opened from disk. */
+#define FILE_TABLE_ADD 0x00689c30u
+static void file_table_check(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *inv, void *user) {
+    (void)inv;
+    (void)user;
+    const uint32_t t = get_u32(cpu->esp + 4);
+    char line[160];
+    snprintf(line, sizeof line, "core.nfsu: packed-file table %08x with %d entries registered (from %08x)", t,
+             (int)get_u32(t + 0xc), get_u32(cpu->esp));
+    api->log(api, line);
+}
+
+/* Same opt-in: before FUN_0068fe30 (file size, -1 when missing) asks for a *Scenery* file, hash its name with the
+ * game's FUN_00683c00 and look for it in every registered packed-file table, the way FUN_00689c80 does. */
+#define FILE_SIZE_QUERY 0x0068fe30u
+#define FILE_NAME_HASH 0x00683c00u
+static void file_size_check(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *inv, void *user) {
+    (void)inv;
+    (void)user;
+    const uint32_t np = get_u32(cpu->esp + 4);
+    char name[96] = {0};
+    for (unsigned i = 0; np && i < sizeof name - 1; ++i) {
+        const uint32_t w = get_u32((np + i) & ~3u);
+        const char ch = (char)(w >> (8 * ((np + i) & 3)));
+        if (!ch)
+            break;
+        name[i] = ch;
+    }
+    if (!strstr(name, "Scenery"))
+        return;
+    uint32_t hash = 0;
+    const uint32_t args[1] = {np};
+    api->guest_call(api, FILE_NAME_HASH, 0, args, 1, &hash);
+    unsigned tables = 0, rows = 0;
+    uint32_t found = 0, found_size = 0;
+    for (uint32_t node = get_u32(0x00cc98c8u); node && node != 0x00cc98c8u && tables < 64; node = get_u32(node)) {
+        ++tables;
+        const int count = (int)get_u32(node + 0xc);
+        for (int k = 0; k < count && k < 100000; ++k, ++rows)
+            if (get_u32(node + 0x10 + 0x14 * k) == hash) {
+                found = node + 0x10 + 0x14 * k;
+                found_size = get_u32(found + 8);
+            }
+    }
+    /* The disc driver index (DisculatorDriver at [0x012b5fa4], built by FUN_006931f0): FUN_00689f40 asks it
+     * (FUN_00683f40, thiscall, a sorted 0x18-byte hash index) before probing the disk. */
+    const uint32_t disc = get_u32(0x012b5fa4u);
+    uint32_t disc_row = 0;
+    if (disc) {
+        const uint32_t a[1] = {np};
+        api->guest_call(api, 0x00683f40u, disc, a, 1, &disc_row);
+    }
+    char line[320];
+    snprintf(line, sizeof line, "core.nfsu: size query \"%s\" hash %08x: %u tables, %u rows, %s (row %08x, size %u);"
+             " disc driver %08x (index %08x, %d rows) -> row %08x size %d",
+             name, hash, tables, rows, found ? "FOUND" : "not in any table", found, found_size, disc,
+             disc ? get_u32(disc + 0x14) : 0, disc ? (int)get_u32(disc + 0x18) : 0, disc_row,
+             disc_row ? (int)get_u32(disc_row + 0x10) : 0);
+    api->log(api, line);
+}
+
+/* MISSING REGION EXTRA (2026-11-14). LoadRegionInit (vtable 0x00b86618, slot 1 = FUN_005dc530) loads
+ * TRACKS\<track>\MakeSceneryExtra.bin through 00692e20 -> 00690620, which asks FUN_0068fe30 for its size. The retail
+ * install has no such file (the person's original TRACKS: 3 files in L8R_MW2), so the size is -1; 00690620 keeps it
+ * (unsigned CMP 8/JNC), FUN_0068f490 allocates "-1 bytes" (a 16-byte dlmalloc block, no max-request check) and the
+ * pool's clearalloc=0xAA (the embedded MemoryConfiguration) memsets 4 GB: the crash after the save loads. No frame on
+ * the chain has a try block (FuncInfo 00c995c0/00c9b060/00ca25bc: 0 tries) and the packed-file and disc indexes are
+ * empty then (measured), so how Windows gets past it is not known. The game's own rule for files shorter than 8
+ * bytes is "no data" (00690620 stores 0: no allocation, no read), so a missing extra file is reported as size 0 to
+ * this one query - only for this name and only when the original said -1. */
+#define FILE_SIZE_QUERY_FN 0x0068fe30u
+static unsigned long g_extra_missing;
+static void read_guest_str(uint32_t p, char *out, unsigned cap) {
+    for (unsigned i = 0; p && i + 1 < cap; ++i) {
+        const uint32_t w = get_u32((p + i) & ~3u);
+        out[i] = (char)(w >> (8 * ((p + i) & 3)));
+        if (!out[i])
+            return;
+    }
+    out[cap - 1] = 0;
+}
+static void region_extra_size(const PopModApi *api, pop_cpu_v1 *cpu, PopHookInvocation *inv, void *user) {
+    (void)user;
+    char name[128] = {0};
+    read_guest_str(get_u32(cpu->esp + 4), name, sizeof name);
+    api->call_next(api, inv, cpu);
+    if (cpu->eax != 0xffffffffu || !strstr(name, "\\MakeSceneryExtra.bin"))
+        return;
+    cpu->eax = 0;
+    if (++g_extra_missing == 1) {
+        char line[200];
+        snprintf(line, sizeof line, "core.nfsu: %s is not installed; loading it as an empty file", name);
+        api->log(api, line);
+    }
+}
+
+PopModStatus pop_mod_init(const PopModApi *api) {
+    g_api = api;
+    api->hook_install(api, FILE_SIZE_QUERY_FN, region_extra_size, POP_HOOK_REPLACE, 0, &g_hooks[6]);
+    const char *diag = getenv("NFSU_DIAG_MEMSET");
+    if (diag && diag[0] == '1') {
+        api->hook_install(api, MEMSET_THUNK, memset_check, POP_HOOK_BEFORE, 0, &g_hooks[2]);
+        api->hook_install(api, ALLOC_FRONT, alloc_check, POP_HOOK_BEFORE, 0, &g_hooks[3]);
+        api->hook_install(api, FILE_TABLE_ADD, file_table_check, POP_HOOK_BEFORE, 0, &g_hooks[4]);
+        api->hook_install(api, FILE_SIZE_QUERY, file_size_check, POP_HOOK_BEFORE, 0, &g_hooks[5]);
+    }
+    PopModStatus s = api->hook_install(api, RENDER_WAIT_STEP, render_wait_yield, POP_HOOK_BEFORE, 0, &g_hooks[0]);
+    PopModStatus r = api->hook_install(api, RENDER_RING_RUN, ring_wait_yield, POP_HOOK_BEFORE, 0, &g_hooks[1]);
+    char line[160];
+    snprintf(line, sizeof line, "core.nfsu: loaded; wait hooks at %08x %s, %08x %s", RENDER_WAIT_STEP,
+             s == POP_OK ? "installed" : "FAILED", RENDER_RING_RUN, r == POP_OK ? "installed" : "FAILED");
+    api->log(api, line);
+    return POP_OK;
+}
+
+PopModStatus pop_mod_exit(void) {
+    for (unsigned i = 0; i < sizeof g_hooks / sizeof g_hooks[0]; ++i)
+        if (g_hooks[i]) {
+            g_api->hook_remove(g_api, g_hooks[i]);
+            g_hooks[i] = 0;
+        }
+    return POP_OK;
+}

@@ -1,0 +1,10 @@
+# NFS Undercover's character shader (people at arrests: cops, the driver; code key 2a6ebd55f9cba503, 2026-11-24).
+# The person: clothes "like coloured foil", black eyes. Found by drawing its intermediates as colour on arrest frames:
+# the light sum was NaN over large areas (black after the final curve). The shader takes log2 of saturated dot
+# products (0 -> -inf) and then multiplies by character_specular_intensity.w (c22.w = 0): 0 x -inf. Direct3D 9
+# hardware gives 0 for "0 x anything" (exp2 -> 1); IEEE (Metal) gives NaN. That product is done the D3D9 way here.
+@@FIND
+    { float4 w_ = ((r[0].xyzw) * (r[2].xxxx)); r[0].xy = w_.xy; }
+@@REPLACE
+    { float4 a_ = r[0].xyzw, b_ = r[2].xxxx; float4 w_ = select(a_ * b_, float4(0.0), a_ == 0.0 || b_ == 0.0); r[0].xy = w_.xy; }
+@@END

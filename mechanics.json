@@ -1,0 +1,215 @@
+{
+ "version": 1,
+ "values": [
+  {
+   "name": "build steps",
+   "group": "pipeline",
+   "value": 7,
+   "source": "function 0x100001acc parseStep ('/7 ')"
+  },
+  {
+   "name": "step line min length",
+   "group": "pipeline",
+   "value": 5,
+   "source": "function 0x100001acc parseStep (count < 5 -> nil)"
+  },
+  {
+   "name": "step 1 weight",
+   "group": "progress",
+   "value": 0.01,
+   "source": "data 0x100034cc8 stepWeights (init 0x10000202c)"
+  },
+  {
+   "name": "step 2 weight",
+   "group": "progress",
+   "value": 0.01,
+   "source": "data 0x100034cc8 stepWeights"
+  },
+  {
+   "name": "step 3 weight",
+   "group": "progress",
+   "value": 0.01,
+   "source": "data 0x100034cc8 stepWeights"
+  },
+  {
+   "name": "step 4 weight (analysis)",
+   "group": "progress",
+   "value": 0.5,
+   "source": "data 0x100034cc8 stepWeights"
+  },
+  {
+   "name": "step 5 weight (translate and build)",
+   "group": "progress",
+   "value": 0.42,
+   "source": "data 0x100034cc8 stepWeights"
+  },
+  {
+   "name": "step 6 weight",
+   "group": "progress",
+   "value": 0.01,
+   "source": "data 0x100034cc8 stepWeights"
+  },
+  {
+   "name": "step 7 weight (packaging)",
+   "group": "progress",
+   "value": 0.04,
+   "source": "data 0x100034cc8 stepWeights"
+  },
+  {
+   "name": "progress cap",
+   "group": "progress",
+   "value": 1.0,
+   "source": "function 0x1000020a4 overallProgress (fminnm 1.0)"
+  },
+  {
+   "name": "within-step progress step",
+   "group": "progress",
+   "value": 5,
+   "source": "function 0x10000e0e8 poll (ccmp #5)"
+  },
+  {
+   "name": "log poll interval",
+   "group": "progress",
+   "value": 2,
+   "unit": "s",
+   "source": "function 0x10000bed8 build (fmov d0 #2.0 at 0x10000cc50)"
+  },
+  {
+   "name": "log tail size",
+   "group": "progress",
+   "value": 65536,
+   "unit": "bytes",
+   "source": "function 0x100004d5c readLogTail default"
+  },
+  {
+   "name": "kept log lines",
+   "group": "log",
+   "value": 3000,
+   "source": "function 0x10000d3e0 consume (0xbb8)"
+  },
+  {
+   "name": "failure summary lines",
+   "group": "log",
+   "value": 4,
+   "source": "function 0x100004148 failureSummary (prefix 4)"
+  },
+  {
+   "name": "fallback summary lines",
+   "group": "log",
+   "value": 6,
+   "source": "function 0x100004148 failureSummary (count - 6)"
+  },
+  {
+   "name": "elapsed hours threshold",
+   "group": "window",
+   "value": 3600,
+   "unit": "s",
+   "source": "function 0x10000e438 elapsedText (cmp 0xe10)"
+  },
+  {
+   "name": "tools poll interval",
+   "group": "tools",
+   "value": 5,
+   "unit": "s",
+   "source": "function 0x10000b210 installTools (fmov d0 #5.0)"
+  },
+  {
+   "name": "check passes on",
+   "group": "check",
+   "value": "exit 0 and 'Check passed'",
+   "source": "function 0x10000b36c check worker"
+  },
+  {
+   "name": "done requires app in destination",
+   "group": "pipeline",
+   "value": true,
+   "source": "function 0x10000dbc8 finished (fileExists dest/<App>.app)"
+  },
+  {
+   "name": "stop signal",
+   "group": "pipeline",
+   "value": 15,
+   "source": "function 0x10000e390 cancel (kill ..., 15)"
+  },
+  {
+   "name": "keep awake while building",
+   "group": "pipeline",
+   "value": true,
+   "source": "function 0x10000bed8 build (beginActivity 0x00FFFFFF)"
+  },
+  {
+   "name": "setup PATH",
+   "group": "pipeline",
+   "value": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin",
+   "source": "function 0x1000021e0 setupEnvironment"
+  },
+  {
+   "name": "window width",
+   "group": "window",
+   "value": 680,
+   "unit": "pt",
+   "source": "SetupApp.swift ContentView .frame(width: 680) (carried source; SwiftUI layout constant not isolated in code)"
+  },
+  {
+   "name": "log view height",
+   "group": "window",
+   "value": 150,
+   "unit": "pt",
+   "source": "SetupApp.swift logView .frame(height: 150) (carried source)"
+  },
+  {
+   "name": "game executable",
+   "group": "game",
+   "value": "nfs.exe",
+   "source": "port game.toml [game] executable"
+  },
+  {
+   "name": "supported game version",
+   "group": "game",
+   "value": "1.0.0.1 Steam, no SecuROM",
+   "source": "port game.toml / CLAUDE.md 'The exe'"
+  },
+  {
+   "name": "pinned exe sha256",
+   "group": "game",
+   "value": "d1ecded04cbba387c99299d2159b29b5c04b1d095293013caa4b404a43c7d2e9",
+   "source": "port game.toml [game] sha256"
+  },
+  {
+   "name": "msvcr80.dll sha256",
+   "group": "game",
+   "value": "02bdde38e4c6bd795a092d496b8d6060cdbe71e22ef4d7a204e3050c1be44fa9",
+   "source": "port tools/setup_kit/setup.py DLLS"
+  },
+  {
+   "name": "saves folder",
+   "group": "game",
+   "value": "~/Library/Application Support/NFS Undercover",
+   "source": "port tools/setup_kit/setup.py PROFILE"
+  },
+  {
+   "name": "built-in mods",
+   "group": "mods",
+   "value": 24,
+   "source": "payload/mods_to_add (the person's project/description/inputs/mods_to_add)"
+  },
+  {
+   "name": "built-in mod files",
+   "group": "mods",
+   "value": 590,
+   "source": "payload/mods_to_add.sha256 (build.rs)"
+  },
+  {
+   "name": "tested Police Career sha256",
+   "group": "mods",
+   "value": "5b27595328e639ce83a6e3c1003f17012e83bfa597ef4ff3865543a74cb84e99",
+   "source": "port game.toml [modules.aux.c_policecareer] sha256"
+  },
+  {
+   "name": "speed profile",
+   "group": "build",
+   "value": "build/pgo/game.profdata (2026-11-17)",
+   "source": "port kit/cmake/Translate.cmake (used when present)"
+  }
+ ]
+}

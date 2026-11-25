@@ -1,0 +1,27 @@
+# NFS Undercover's smoke and dust particles (pixel shader code 3cf6a4bed07ac3a7, drawn into the quarter-screen smoke
+# buffer): their colour came from the vertex colour alone and the texture only gave the coverage, so every puff was one
+# flat tone. Now denser parts are darker (smoke shading itself), thin wisps lighter, the texture's brightness adds
+# detail and a soft noise in the puff's own texture space breaks it up (core.nfsu, 2026-11-17).
+@@FIND
+    { float4 w_ = ((r[0].xxxx) * (t[0].zzzz)); oc[0].w = w_.w; }
+@@REPLACE
+    { float4 w_ = ((r[0].xxxx) * (t[0].zzzz)); oc[0].w = w_.w; }
+    {
+        const float4 sx = tx0.sample(sm0, t[0].xy);
+        const float dens = saturate(sx.w);
+        const float lum = dot(sx.rgb, float3(0.299, 0.587, 0.114));
+        const float2 q = t[0].xy * 9.0;
+        const float2 i0 = floor(q), f0 = fract(q), u = f0 * f0 * (3.0 - 2.0 * f0);
+        const float a00 = fract(sin(dot(i0, float2(12.9898, 78.233))) * 43758.5453);
+        const float a10 = fract(sin(dot(i0 + float2(1, 0), float2(12.9898, 78.233))) * 43758.5453);
+        const float a01 = fract(sin(dot(i0 + float2(0, 1), float2(12.9898, 78.233))) * 43758.5453);
+        const float a11 = fract(sin(dot(i0 + float2(1, 1), float2(12.9898, 78.233))) * 43758.5453);
+        const float n = mix(mix(a00, a10, u.x), mix(a01, a11, u.x), u.y);
+        const float shade = mix(1.10, 0.74, dens) * mix(0.9, 1.1, lum) * (0.9 + 0.2 * n);
+        // 2026-11-18: the puffs' vertex colour carries the sky's blue (seen bluish with the neutral colour filter):
+        // most of it is taken out, toward the puff's own grey.
+        const float3 sc = oc[0].xyz * shade;
+        oc[0].xyz = saturate(mix(float3(dot(sc, float3(0.299, 0.587, 0.114))), sc, 0.35));
+        oc[0].w = saturate(oc[0].w * (0.85 + 0.3 * n));
+    }
+@@END

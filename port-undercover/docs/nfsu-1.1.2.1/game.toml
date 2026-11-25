@@ -1,0 +1,185 @@
+# game.toml - everything the kit needs to know about Need for Speed: Undercover
+# (PC, nfs.exe FileVersion 1.1.2.1, PE timestamp 2009-05-04, no SecuROM wrapper:
+# sections .text .rdata .data .tls .rsrc .reloc only, entry point in .text)
+# that is not derivable from the binary.
+#
+# Values marked "sentinel" are not identified yet: they point into the linker's
+# "PADDINGXX" filler after the resource data (0x018a1214-0x018a1fff; resources
+# end at 0x018a1214, nothing references the filler), so the kit's hooks compile
+# and never fire. Sentinels and slots use 0x018a1400-0x018a1fff. Replace each
+# one with a real address as bring-up finds it.
+#
+# Not to be confused with the retail 1.0.0.1 nfs.exe (SHA-256 6caed72e...af95b4,
+# 46.6 MB): that one is SecuROM 7 wrapped (.securom section, entry 0x03070b08)
+# and can't be translated.
+
+[game]
+id = "nfsu"
+name = "Need for Speed: Undercover"
+app_name = "UndercoverRecomp"
+bundle_id = "io.github.nfsu-native-mac"
+executable = "nfs.exe"
+sha256 = "3f33193ff09a00cba0fb8b8a44ccac8fdc4133c12d1fa05251aff0164b6d355d"
+image_base = 0x00400000
+entry_point = 0x0087ba75
+# The game's own registry key is HKLM\Software\EA Games\Need for Speed Undercover (string in nfs.exe).
+guest_root = 'C:\Program Files\EA Games\Need for Speed Undercover'
+developer_exe = "original/nfs.exe"
+windows_version = "5.1.2600"
+# The image ends at 0x01939000 (.reloc), above the kit's default heap start 0x01000000.
+heap_base = 0x01940000
+# Nearly 2 GB arena, as Carbon: the two runtime DLLs sit just above the fixed stack/TEB/shim region
+# (0x10000000), the extra heap above them. Only memory the game touches is used.
+guest_size = 0x7ffff000
+heap_extra_base = 0x10130000
+heap_extra_size = 0x6fecf000
+
+[translate]
+listings = "analysis/decompiled/nfs.exe"
+globals = "globals.toml"
+animation_counter = 0x018a1f00  # sentinel
+volatile_reads = []
+# Functions Ghidra misses (reached only through pointers) are added here as runs report them.
+# 0046f1a0, 0046f300, 0048ad20, 0048b080, 0048b300 (first translation, 2026-11-13): thiscall methods
+# `MOV EAX,[ESP+4]; PUSH ESI; ADD EAX,3; CMP EAX,n; ... JMP [EAX*4 + table]`, each after int3 padding (0046f300
+# right after 0046f1a0's byte table), absent from functions.tsv; the translator's recovery folded them into
+# fn_0046f090 / fn_0048ac80 and their switch tables "decoded no entries at all".
+# With the translator's stale-site fix (CLAUDE.md, kit change 2) the real failures showed: 18 functions whose
+# switch cases were missing ("entry N -> ... is not an instruction boundary"), the same family (state handlers
+# that PUSH each other's addresses), plus 007afe20 / 004a54f0. tools/analyze.py now makes these functions in
+# Ghidra before its analysis, so Ghidra resolves their tables (tools/ghidra/CreateEntryFunctions.java).
+entry_points = [0x0046f1a0, 0x0046f300, 0x0047fdf0, 0x0047ff90, 0x00486120, 0x004862c0, 0x004890e0,
+                0x0048ad20, 0x0048b080, 0x0048b300, 0x0048b7b0, 0x0048cfa0, 0x0048ece0, 0x004a4d10,
+                0x004a54f0, 0x004a5ff0, 0x004a6510, 0x004a6d40, 0x004a7110, 0x007afe20,
+                # 00a06100 (after int3 padding, a gap 00a06060..00a06780 in the listing): called from 00a03940
+                # just before the memory tracker said "Don't recognise category named 'Global'" for every
+                # category (run 2026-11-13, "call to unknown target 00a06100 ... returning 0").
+                0x00a06100,
+                # Code pointers the game stores with `MOV dword ptr [mem],imm` whose targets the translation still
+                # lacked after the immediate scan took memory stores too (translate.py, 2026-11-13): unaligned
+                # starts right after a RET fail its plausibility test. 00880419..00880ac2 = one family of routines
+                # (`MOV EAX,[ESP+4]; MOV EDX,[ESP+8]`, a CPU-dispatched copy; 00880419 stored by 0088040d into
+                # [0x1272c8c] and jumped to through 008802fb, run 7); 00a00400/00a2fe00/00a3d0c0 after int3.
+                # Left out as constants, not code: 0x746164 ("dta"), 0x7f0000, 0xabcdef.
+                0x00880419, 0x008805ce, 0x008806b8, 0x0088076c, 0x00880902, 0x008809b6, 0x00880ac2,
+                0x00a00400, 0x00a2fe00, 0x00a3d0c0,
+                # 0072b340 = the window procedure of "gameframe" (stored by 0072e510; `CMP ESI,0xf` = WM_PAINT on
+                # the msg argument): "call to unknown target 0072b340" then "CreateWindowExA("gameframe"): the
+                # window procedure cancelled creation" (run 9). It follows a `RET 4` with no padding.
+                0x0072b340,
+                # 009eb5e0: after int3 padding, `PUSH EBX; PUSH EBP; MOV EBP,[ESP+0x10]`; called through EDX from
+                # 0080493a on a worker thread ("call to unknown target 009eb5e0 ... returning 0", run 13, the first
+                # run with raw shaders: sound plays, 1 frame presented, 0 draws).
+                0x009eb5e0,
+                # 0088665a: a thiscall method right after the previous one's `RET 0xc` (no padding; `PUSH ESI; PUSH
+                # EDI; MOV EDX,ECX; LEA ESI,[EDX+0x1c]; ... REP STOSD`), reached through a vtable from 00884cd9 when
+                # Enter is pressed on the title screen ("call to unknown target 0088665a ... returning 0", then an
+                # unhandled access violation; the person's two runs 2026-11-14 07:56 / 07:58).
+                0x0088665a,
+                # The 19 methods of the vtable at 0x00c31668..0x00c316d4 (27 slots, no RTTI) that analysis had not made
+                # into functions; each starts after int3 padding or a RET. Found when slot 0x00c316a0 (009ecba0) was
+                # called from 009ec8e0 during the first scene load ("call to unknown target 009ecba0 ... returning 0",
+                # then unhandled access violations; run 2026-11-14 after the MakeSceneryExtra fix).
+                0x009ec260, 0x009ec2a0, 0x009ec2e0, 0x009ec360, 0x009ec380, 0x009ec390, 0x009ecb40,
+                0x009ecb70, 0x009ecba0, 0x009ed980, 0x009ed9a0, 0x009edac0, 0x009eddf0, 0x009ede00,
+                0x009ede10, 0x009ede20, 0x009ede30, 0x009ede40, 0x009ee120]
+operand_redirects = []
+instruction_patches = []
+# The filler holds "PADDINGXX" text: the kit's sentinel globals read zero, as on Carbon.
+data_seeds = [
+    { addr = 0x018a1f60, value = 0 },
+    { addr = 0x018a1f64, value = 0 },
+    { addr = 0x018a1f70, value = 0 },
+]
+
+# nfs.exe imports the Visual C++ 2005 runtime (msvcr80.dll / msvcp80.dll 8.0.50727.762, the copies the game
+# installs beside nfs.exe with microsoft.vc80.crt.manifest). Both are translated like the game, from copies
+# tools/rebase_pe.py relocates to the bases below (the originals want 0x78130000 / 0x7c420000, where the
+# kit's extra heap lives). Keys sort into load order: msvcp80 imports msvcr80, so msvcr80 comes first.
+# tools/rebase_pe.py fills in sha256 and size.
+[modules.aux.a_msvcr80]
+name = "msvcr80.dll"
+path = "rebased/msvcr80.dll"
+sha256 = "69f0db51bfe5831543ef7c26250ccb198572e88aadedbd8c1c331cb7ce6b35c4"
+base = 0x10000000
+size = 0x9b000
+listings = "analysis/decompiled/msvcr80.dll"
+# 1000aa56: right after __create_locale's 5-byte JMP (1000aa51), an SEH-prolog function msvcp80 calls
+# (return 100cc53c; "call to unknown target 1000aa56", first runs 2026-11-13).
+# 100029e1: _threadstartex, after int3 padding; CreateThread's start routine for every _beginthreadex thread
+# ("call to unknown target 100029e1 ... guest thread 2", run 6, 2026-11-13). Exports are entries anyway
+# (translate.py pe_code_exports).
+# The x87 transcendental dispatcher __trandisp2 (1005bd97) ends in `JMP [EBX]` (1005be21) through per-function
+# tables at 0x100929c4.. and 0x100931b0..; their targets are small tail routines after a RET that analysis never
+# reached: 1005be34, 1005be6d (FXCH, falling into 1005be6f), 1005be6f, 1005be97, 1005bed6, 1005c97c, 1005c9d5,
+# 1005c9f8. "recomp: no block entry for indirect jump to 0x1005c9d5 from 0x1005be21" aborted the first scene load
+# (run 2026-11-14, thread 10).
+entry_points = [0x1000aa56, 0x100029e1,
+                0x1005be34, 0x1005be6d, 0x1005be6f, 0x1005be97, 0x1005bed6, 0x1005c97c, 0x1005c9d5, 0x1005c9f8]
+function_alignment = 4
+
+[modules.aux.b_msvcp80]
+name = "msvcp80.dll"
+path = "rebased/msvcp80.dll"
+sha256 = "c689c4cde4a4736c2f3dbda15edc11d57633576f62256955afe05918009baf6d"
+base = 0x100a0000
+size = 0x87000
+listings = "analysis/decompiled/msvcp80.dll"
+entry_points = []
+function_alignment = 4
+
+[hooks]
+# All sentinels until bring-up identifies them (see the MW port's game.toml
+# for what each one means).
+frame_clock_begin = 0x018a1f10
+frame_clock_wait = 0x018a1f14
+frame_clock_wait_clamp = 0x018a1f18
+frame_clock_clamp_deadline = 0x018a1f20
+frame_clock_wait_deadline = 0x018a1f24
+cursor_surface_ptrs = [0x018a1f30, 0x018a1f34]
+mouse_vtable = 0x018a1f40
+mouse_device_ptr = 0x018a1f44
+mouse_device_right = 0x018a1f48
+camera = 0x018a1f50
+sprites = []
+
+[mods]
+builtin = "none"
+
+[controls]
+pad = "native"
+
+[controls.native]
+xinput = false
+dinput = true
+axes = ["x", "y", "z", "rz", "rx", "ry"]
+buttons = ["square", "cross", "circle", "triangle", "l1", "r1", "l2", "r2", "select", "start", "l3", "r3", "ps"]
+
+[launcher]
+title = "Need for Speed: Undercover"
+install_names = ["Need for Speed - Undercover", "Need for Speed Undercover", "NFS Undercover", "Undercover"]
+min_free_mb = 300
+
+[setup]
+# Folders of the installed game (checked by the Setup app and setup.sh).
+required_dirs = ["CARS", "FRONTEND", "GLOBAL", "LANGUAGES", "SOUND", "TRACKS"]
+# Files the game opens at start-up with no fallback (run 17, 2026-11-13: the HD or SD APT font is chosen by the
+# pointer at 0x00cbfacc and opened by 005dcfa0 -> 00692e20; with neither present the main thread went on with bad
+# data and faulted in memset near the top of the arena). Only files a run has proved necessary are listed.
+# (TRACKS\L8R_MW2\MakeSceneryExtra.bin is NOT part of the retail install - the person's original TRACKS has the
+# same 3 files - so it is not listed; the game must cope without it.)
+required_files = ["GLOBAL/GLOBAL_APT_FONT_HD.BUN", "GLOBAL/GLOBAL_APT_FONT_SD.BUN"]
+
+[bundle]
+# The stock runtime DLLs stay out; the rebased copies are bundled instead. PB = PunkBuster (online only),
+# "`" = where this install keeps a save, Support = EA's support tools, *_old = a player's own set-aside copies
+# (GLOBAL_old: the incomplete 2-file GLOBAL the player kept when restoring the full one, 2026-11-14).
+exclude = ["Uninstall", "Support", "scripts", "SAVE", "PB", "`", "*_old", "*.dll", "*.asi", "*.txt", "*.manifest"]
+
+[settings]
+rows = ["window", "frame_limit", "performance_overlay", "filtering"]
+page = "tabs"
+# The core mod whose settings the kit reads for its own features (pause_in_menu, upscaling).
+core_mod = "core.nfsu"
+# A 3D game: fill the screen at any resolution.
+scaling = "smooth"

@@ -1,0 +1,93 @@
+# NFS Undercover's fog and sun-haze pass (code 961f166f1ae442c4, drawn over the whole scene before the speed blur):
+# TEXTURE1 is the sharp scene, which it fogs and hazes; then it blends toward DIFFUSE, a quarter-size blurred copy,
+# by that copy's alpha (a depth-based amount) x c9.w - distant things smeared, the sky bleeding over the edges of trees,
+# lights in a halo. That blend is taken out: the fog and the haze stay as the game sets them, on the sharp picture
+# (core.nfsu, 2026-11-18; a first try that took the blurred copy for the sharp one blurred everything). Code key.
+@@FIND
+    { float4 w_ = saturate((r[0].wwww) * (c[9].wwww)); r[1].x = w_.x; }
+@@REPLACE
+    { r[1].x = 0.0; }
+@@END
+# Headlights and tunnel lamps (core.nfsu setting headlights; 2026-11-18): the kit's
+# RECOMP_D3D9_CAR_LIGHTS fills c14-c17 the inverse view projection, c18 the camera + light count, c19-c22 the view
+# projection, c23 = (lights with shadows, unused), c24.. two per light - a headlight: position + strength,
+# direction + cos of the cone's edge; a tunnel lamp (found by the kit among the frame's brightest spots): position +
+# strength, its colour + -1 - and c88 the headlights' colour. Each pixel's world position comes back from the scene
+# depth this pass reads (texture 2 decoded with c7, as the pass does), its normal from the screen derivatives of that
+# position. A headlight lights it by its cone, the distance squared and the angle, weak right under the bumper,
+# fading out by 70 m; the nearest four are shadowed where their light shows: 7 steps toward the lamp through the depth
+# buffer (blocked when the surface there is 0.6-4 m nearer than the step). A lamp lights all round within 20 m. (A
+# tunnel darkening filter here was taken out on the person's word, 2026-11-18: the tunnel's darkness is now the game's
+# own baked shade made deeper, all-vertex.patch.) Light is added as scene x (1 + light / (8 x
+# local blurred brightness + 0.04)), so it shows in the dark and hardly in daylight.
+@@FIND
+    { float4 w_ = ((r[1].xxxx) * (r[0].xyzw) + (r[3].xyzw)); oc[0].xyz = w_.xyz; }
+@@REPLACE
+    { float4 w_ = ((r[1].xxxx) * (r[0].xyzw) + (r[3].xyzw)); oc[0].xyz = w_.xyz; }
+    {
+        const float dpt_ = dot(tx2.sample(sm2, t[0].xy), c[7]);
+        const float2 ndc_ = float2(t[0].x * 2.0 - 1.0, 1.0 - t[0].y * 2.0);
+        const float4 wp_ = ndc_.x * c[14] + ndc_.y * c[15] + dpt_ * c[16] + c[17];
+        const float3 p_ = wp_.xyz / (abs(wp_.w) > 1e-8 ? wp_.w : 1e-8);
+        float3 n_ = cross(dfdx(p_), dfdy(p_));
+        const int nl_ = int(c[18].w + 0.5);
+        const int ns_ = int(c[23].x + 0.5);
+        const float3 eye_ = c[18].xyz;
+        const float nn_ = dot(n_, n_);
+        n_ = nn_ > 1e-12 ? n_ * rsqrt(nn_) : float3(0.0, 0.0, 1.0);
+        if (dot(n_, eye_ - p_) < 0.0)
+            n_ = -n_;
+        if (nl_ > 0 && dpt_ < 0.99999) {
+            float3 lt_ = float3(0.0);
+            for (int i_ = 0; i_ < 32; ++i_) {
+                if (i_ >= nl_)
+                    break;
+                const float4 lp_ = c[24 + 2 * i_], ld_ = c[25 + 2 * i_];
+                const float3 v_ = lp_.xyz - p_;
+                const float dd_ = max(dot(v_, v_), 0.25);
+                const float dist_ = sqrt(dd_);
+                const float3 l_ = v_ / dist_;
+                if (ld_.w < -0.5) { // a tunnel lamp
+                    if (dist_ > 20.0)
+                        continue;
+                    const float fade_ = saturate(1.0 - dist_ / 20.0);
+                    lt_ += ld_.xyz * (lp_.w * saturate(dot(n_, l_) * 0.9 + 0.1) * fade_ * fade_ / dd_);
+                    continue;
+                }
+                if (dist_ > 70.0)
+                    continue;
+                const float sp_ = smoothstep(ld_.w, min(ld_.w + 0.16, 1.0), dot(-l_, ld_.xyz));
+                if (sp_ <= 0.0)
+                    continue;
+                const float fade_ = saturate(1.0 - dist_ / 70.0) * (0.25 + 0.75 * smoothstep(1.5, 10.0, dist_));
+                const float add_ = lp_.w * sp_ * saturate(dot(n_, l_) * 0.85 + 0.15) * fade_ / dd_;
+                if (add_ < 0.004)
+                    continue; // too faint to see: no shadow needed
+                float vis_ = 1.0;
+                if (i_ < ns_) {
+                    for (int k_ = 1; k_ <= 7; ++k_) {
+                        const float3 q_ = p_ + v_ * (float(k_) * float(k_) / 64.0); // denser near the surface
+                        const float4 qc_ = q_.x * c[19] + q_.y * c[20] + q_.z * c[21] + c[22];
+                        if (qc_.w <= 0.05)
+                            break;
+                        const float2 quv_ = float2(qc_.x / qc_.w * 0.5 + 0.5, 0.5 - qc_.y / qc_.w * 0.5);
+                        if (any(quv_ < 0.0) || any(quv_ > 1.0))
+                            break;
+                        const float sd_ = dot(tx2.sample(sm2, quv_), c[7]);
+                        const float2 sn_ = float2(quv_.x * 2.0 - 1.0, 1.0 - quv_.y * 2.0);
+                        const float4 sw_ = sn_.x * c[14] + sn_.y * c[15] + sd_ * c[16] + c[17];
+                        const float3 s_ = sw_.xyz / (abs(sw_.w) > 1e-8 ? sw_.w : 1e-8);
+                        const float gap_ = length(q_ - eye_) - length(s_ - eye_);
+                        if (gap_ > 0.6 && gap_ < 4.0) {
+                            vis_ = 0.0;
+                            break;
+                        }
+                    }
+                }
+                lt_ += c[88].xyz * (add_ * vis_);
+            }
+            const float env_ = dot(tx0.sample(sm0, t[0].xy).rgb, float3(0.299, 0.587, 0.114)) * 8.0 + 0.04;
+            oc[0].xyz = oc[0].xyz * (1.0 + min(lt_ / env_, float3(2.5)));
+        }
+    }
+@@END
