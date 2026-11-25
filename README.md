@@ -116,6 +116,15 @@ The mod files are the work of their authors and are included as they distributed
 - **veritr1x** — recomp-kit, the static recompiler and runtime (in `port-undercover/kit/`, MIT).
 - The mod authors listed above.
 
+## Contact
+
+Everything goes through this repository's [Issues](../../issues/new/choose) — there is no e-mail address:
+
+- **Thanks and feedback** — say thank you, share how the game runs on your Mac, suggest improvements.
+- **Bug reports** — something doesn't build or doesn't work in the game.
+- **Removal requests** — if you are the author of a built-in mod or another rights holder and want something taken
+  down or credited differently, please open a removal request first; it will be handled promptly.
+
 ## Building the Setup app from source
 
 The repository holds the Setup app (Rust, eframe/egui) and, in `port-undercover/`, the Undercover port's source

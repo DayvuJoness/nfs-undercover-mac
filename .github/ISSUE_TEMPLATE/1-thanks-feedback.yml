@@ -1,0 +1,17 @@
+name: Thanks and feedback
+description: Say thank you, share how the game runs on your Mac, or suggest an improvement.
+title: "[Feedback] "
+labels: ["feedback"]
+body:
+  - type: textarea
+    id: message
+    attributes:
+      label: Your message
+      description: Thanks, impressions, ideas - anything you'd like to share.
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: Your Mac (optional)
+      description: For example "MacBook Air M2, 16 GB, macOS 15".

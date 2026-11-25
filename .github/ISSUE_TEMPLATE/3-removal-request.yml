@@ -1,0 +1,37 @@
+name: Removal or credit request
+description: For mod authors and other rights holders - ask for something to be removed or credited differently.
+title: "[Removal request] "
+labels: ["removal request"]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Thank you for getting in touch first. Requests from mod authors and rights holders are handled promptly.
+  - type: input
+    id: who
+    attributes:
+      label: Who you are
+      description: Your name or nickname, and your relation to the material (for example "author of the X mod").
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What it concerns
+      description: Which mod, file or part of this repository or its releases.
+    validations:
+      required: true
+  - type: dropdown
+    id: request
+    attributes:
+      label: What you'd like
+      options:
+        - Remove it
+        - Change how it is credited
+        - Something else (please describe below)
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details (optional)

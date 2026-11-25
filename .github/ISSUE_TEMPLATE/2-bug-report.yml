@@ -1,0 +1,28 @@
+name: Bug report
+description: The Setup app doesn't build the game, or something doesn't work in the game.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: mac
+    attributes:
+      label: Your Mac
+      description: Model, chip, memory and macOS version, for example "MacBook Pro M1, 8 GB, macOS 14.5".
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log (optional)
+      description: >
+        If the build stopped: the last lines of ~/Library/NFSU-Native-Setup/source/build/setup.log (the Setup app's
+        "Show the log" button). If the game misbehaves: ~/Library/Application Support/NFS Undercover/Logs/latest.log.
+        Please remove anything personal (your user name in paths) before posting.
+      render: text
